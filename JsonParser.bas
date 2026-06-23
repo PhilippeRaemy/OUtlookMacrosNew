@@ -1,6 +1,6 @@
 Attribute VB_Name = "JsonParser"
 Sub testParseJson()
-Dim results As Scripting.Dictionary
+Dim results As scripting.Dictionary
 Dim key As Variant
     Set results = ParseJson("{""name"": ""John Doe"", ""age"": 30, ""isStudent"": false}")
     For Each key In results.Keys
@@ -8,11 +8,11 @@ Dim key As Variant
     Next key
 End Sub
 
-Function ParseJson(jsonString As String) As Scripting.Dictionary
+Function ParseJson(jsonString As String) As scripting.Dictionary
 
     Dim matches As Object
     Dim match As Object
-    Set ParseJson = New Scripting.Dictionary
+    Set ParseJson = New scripting.Dictionary
     Dim regEx As New VBScript_RegExp_55.RegExp
     
     ' Create a RegExp object

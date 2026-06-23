@@ -1,34 +1,101 @@
 Attribute VB_Name = "ClassificationRuleStatic"
-Private rules() As ClassificationRule
+Public RulesDic As scripting.Dictionary
+
 Private inited As Boolean
 
-Public Function NewClassificationRule(folder As String, addresses As String) As ClassificationRule
-    Set NewClassificationRule = New ClassificationRule
-    NewClassificationRule.folder = folder
-    NewClassificationRule.addresses = addresses
+
+
+' This function returns 2 if an actual new rule has been added, 1 if the rule has been merged into a simlar one (same folder, same retention) or 0 if the new rule was already covered
+Public Function NewClassificationRule(Folder As String, Addresses As String, Optional seq As Integer = 0, Optional Retention As String = "") As Boolean
+    If RulesDic Is Nothing Then Set RulesDic = New scripting.Dictionary
+    Dim rule As New ClassificationRule
+    Dim existing As Variant
+    Dim newad As Variant
+    rule.Folder = Folder
+    Dim FolderName As String: FolderName = rule.FolderName
+    Dim required As Boolean
+    If RulesDic.Exists(FolderName) Then
+        Set rule = RulesDic.Item(FolderName)
+        For Each newad In VBA.Split(Addresses)
+            required = False
+            For Each existing In VBA.Split(rule.Addresses)
+                If Not Replace(newad, "%", "*") Like Replace(existing, "%", "*") Then
+                    required = True
+                    Exit For
+                End If
+            Next existing
+            If required Then
+                NewClassificationRule = 1
+                rule.Addresses = rule.Addresses & ":" & newad
+            End If
+        Next newad
+        
+        rule.Addresses = RulesDic.Item(FolderName).Addresses & ";" & Addresses
+        NewClassificationRule = False
+    Else
+        rule.Addresses = Addresses
+        ' in case when setting the folder name has parsed it into these props, we're only overriding if they're not default
+        If Retention <> "" Then rule.RetentionText = Retention
+        If seq <> 0 Then rule.Sequence = seq
+        RulesDic.Add FolderName, rule
+        NewClassificationRule = 2
+    End If
+End Function
+
+Private Function dicGet(dic As scripting.Dictionary, Item As Variant, default As Variant) As Variant
+    If dic.Exists(Item) Then
+        dicGet = dic(Item)
+    Else
+        dicGet = default
+    End If
 End Function
 
 
 Public Sub ReadRules()
 Dim fso As New FileSystemObject
 Dim line As String
-Dim parsedLine As Scripting.Dictionary
+Dim parsedLine As scripting.Dictionary
 Dim count As Integer: count = -1
+Dim AnyMerge As Boolean
+Dim r As Variant
+Dim originalFilePath As String: originalFilePath = ThisOutlookSession.GetSearchesFileName()
 
-    ReDim rules(10)
+    If RulesDic Is Nothing Then
+        Set RulesDic = New scripting.Dictionary
+        RulesDic.CompareMode = TextCompare
+    Else
+        RulesDic.RemoveAll
+    End If
     
-    With fso.OpenTextFile(ThisOutlookSession.GetSearchesFileName(), ForReading)
+    With fso.OpenTextFile(originalFilePath, ForReading)
         While Not .AtEndOfStream
             line = .ReadLine
             Set parsedLine = ParseJson(line)
-            count = count + 1
-            If count > UBound(rules) Then
-                ReDim Preserve rules(count + 10)
-            End If
-            Set rules(count) = NewClassificationRule(parsedLine("name"), parsedLine("criterion"))
+            AnyMerge = AnyMerge Or _
+                (0 <> NewClassificationRule( _
+                        parsedLine("name"), _
+                        parsedLine("criterion"), _
+                        dicGet(parsedLine, "seq", 0), _
+                        dicGet(parsedLine, "ret", "")))
         Wend
     End With
-    ReDim Preserve rules(count)
+    
+    If AnyMerge Then
+' Build precise ISO file naming layout
+        fileExtension = fso.GetExtensionName(originalFilePath)
+        baseFilePath = Left(originalFilePath, Len(originalFilePath) - Len(fileExtension) - 1)
+        backupFilePath = baseFilePath & "_" & Format(Now, "yyyymmdd-hhmmss") & "." & fileExtension
+        
+        ' Create physical copy tracking point
+        fso.CopyFile originalFilePath, backupFilePath, True
+        
+        ' Rewrite pristine, consolidated data sets to the original source path
+        With fso.OpenTextFile(originalFilePath, ForWriting, True)
+            For Each r In RulesDic
+                If Not IsEmpty(RulesDic.Item(r)) Then .WriteLine RulesDic.Item(r).ToJson
+            Next r
+        End With
+    End If
     inited = True
 End Sub
 
@@ -40,24 +107,20 @@ Sub test_read_rules()
     
 End Sub
 
-Sub AddRule(rule As ClassificationRule)
-    ReDim Preserve rules(LBound(rules) To UBound(rules) + 1)
-    Set rules(UBound(rules)) = rule
-End Sub
-
-Function CheckRuleExists(addresses) As Boolean
+Function CheckRuleExists(Addresses) As Boolean
 Dim i As Integer
 
+    If UBound(rules) < 0 Then ReadRules
     CheckRuleExists = True
     For i = LBound(rules) To UBound(rules)
-        If rules(i).addresses = addresses Then Exit Function
+        If rules(i).Addresses = Addresses Then Exit Function
     Next i
 
     CheckRuleExists = False
     
 End Function
 
-Function AnyRuleMatch(ParamArray addresses() As Variant) As Boolean
+Function AnyRuleMatch(ParamArray Addresses() As Variant) As Boolean
 Dim aList As Variant
 Dim addr As Variant
 Dim rule As Variant ' ClassificationRule
@@ -75,10 +138,10 @@ proc:
     
     If Not inited Then ReadRules
 
-    For Each aList In addresses
+    For Each aList In Addresses
         For Each addr In VBA.Split(aList, ";")
             For Each rule In rules
-                For Each addrMask In VBA.Split(rule.addresses, ";")
+                For Each addrMask In VBA.Split(rule.Addresses, ";")
                     If addr Like Replace(addrMask, "%", "*") Then
                         AnyRuleMatch = True
                         Exit Function
